@@ -430,5 +430,5 @@ def hello_geek():
 # TODO Create quota poster CRUD API's
 
 if __name__ == "__main__":
-    socketio.run(app, debug=True,port=5000)
+    socketio.run(app, debug=True,port=8080,host="0.0.0.0")#,port=5000)
     #app.run(host="0.0.0.0", port=5000,debug=True)
