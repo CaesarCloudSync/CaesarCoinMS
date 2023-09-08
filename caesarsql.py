@@ -8,14 +8,14 @@ import subprocess
 import os
 import MySQLdb
 import argparse
-
+import base64
 class CaesarSQL:
     def __init__(self,host:str='localhost',user:str='root',password:str="temp123") -> None:
         # Makes SQL connection to remote server.
-        self.dbdata =  {"host": os.getenv("HOST"),
-            "user":os.getenv("USERNAMESQL"),
-            "passwd": os.getenv("PASSWORD"),
-            "db": os.getenv("DATABASE"),
+        self.dbdata =  {"host": base64.b64decode(os.getenv("HOST")).decode(),
+            "user":base64.b64decode(os.getenv("USERNAMESQL")).decode(),
+            "passwd": base64.b64decode(os.getenv("PASSWORD")).decode(),
+            "db": base64.b64decode(os.getenv("DATABASE")).decode(),
             "autocommit" : True,
             "ssl_mode" : "VERIFY_IDENTITY",
             "ssl"      : {

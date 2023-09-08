@@ -53,7 +53,7 @@ def quotapostersignup():
             return {"message":"company already exists"}
         else:
             passwordhash = CaesarHash.hash_text_auth(password)
-            result = caesarcrud.post_data(fields,(company,email,passwordhash),table)
+            result = caesarcrud.post_data(fields,(company,email,passwordhash,companyidentity),table)
             if result:
                 access_token = create_access_token(identity=companyidentity)
                 return {"access_token":access_token}
@@ -92,23 +92,39 @@ def quotapostersignin():
 def contributorsignin():
     try:
         signininfo = request.get_json()
+        usernameid = signininfo.get("contributorid")
+      
         table = "contributors"
-        email = signininfo['email']
+        if not usernameid:
+            username = signininfo['contributor']
+            condition = f"contributor = '{username}'"
+            contributoridentity = CaesarHash.hash_text(username)
+        else:
+            condition = f"contributorid = '{usernameid}'"
+            contributoridentity = usernameid
+
+
+        #email = signininfo['email']
         password = signininfo['password']
-        contributoridentity = CaesarHash.hash_text(email)
+        
         fields = caesarcreatetables.contributorsfields
-        condition = f"email = '{email}'"
+        
         contributor_exists = caesarcrud.check_exists(("*"),table,condition)
         if contributor_exists:
             result = caesarcrud.get_data(fields,table,condition)[0]
             password_matches = CaesarHash.match_hashed_text(result['password'],password)
             if password_matches:
                 access_token = create_access_token(identity=contributoridentity)
-                return {"access_token":access_token}
+                if usernameid:
+                    username = caesarcrud.get_data(("contributor",),"contributors",f"contributorid = '{usernameid}'")
+                    return {"access_token":access_token,"contributor":username[0]["contributor"]}
+                else:   
+                    return {"access_token":access_token}
             else:
                 return {"message":"incorrect username or password"}
         else:
             return{"message":"incorrect username or password"}
+
 
     except Exception as ex:
         return {"error":f"{type(ex)}-{ex}"}
@@ -118,17 +134,19 @@ def contributorsignup():
     try:
         signininfo = request.get_json()
         table = "contributors"
+        username = signininfo['contributor']
         email = signininfo['email']
         password = signininfo['password']
-        companyidentity = CaesarHash.hash_text(email)
+        companyidentity = CaesarHash.hash_text(username)
+        emailhash = CaesarHash.hash_text(email)
         fields = caesarcreatetables.contributorsfields
-        condition = f"email = '{email}'"
+        condition = f"contributor = '{username}'"
         contributor_exists = caesarcrud.check_exists(("*"),table,condition)
         if contributor_exists:
             return {"message":"contributor already exists"}
         else:
             passwordhash = CaesarHash.hash_text_auth(password)
-            result = caesarcrud.post_data(fields,(email,passwordhash),table)
+            result = caesarcrud.post_data(fields,(username,email,passwordhash,emailhash,companyidentity),table)
             if result:
                 access_token = create_access_token(identity=companyidentity)
                 return {"access_token":access_token}
@@ -219,11 +237,13 @@ def updatequota():
             quota_exists = caesarcrud.check_exists(("*"),table,conditioncheck)
             if "quotatitle" in quota and "quotatype" in quota:
                 newquotahash = CaesarHash.hash_quota(quota)
+                caesarcrud.post_data(caesarcreatetables.quotatypes,(quota["quotatype"],),"quotatypes")
             elif "quotatitle" in quota and "quotatype" not in quota:
                 quotahashinp = {"quotatitle":quota["quotatitle"],"quotatype":old_quota["quotatype"]}
                 newquotahash = CaesarHash.hash_quota(quotahashinp)
             elif "quotatitle" not in quota and "quotatype" in quota:
                 quotahashinp = {"quotatitle":old_quota["quotatitle"],"quotatype":quota["quotatype"]}
+                caesarcrud.post_data(caesarcreatetables.quotatypes,(quota["quotatype"],),"quotatypes")
                 newquotahash = CaesarHash.hash_quota(quotahashinp)
             elif "quotatitle" not in quota and "quotatype" not in quota:
                 newquotahash = None
@@ -249,6 +269,9 @@ def updatequota():
                 if newquotahash:
                     fieldquotahash,quotahashvalue = tuple(["quotahash"]),tuple([newquotahash])
                     result = caesarcrud.update_data(fieldquotahash,quotahashvalue,table,conditioncheck)
+                    res = caesarcrud.get_data(("company",),"quotaposters",f"quoterkey = '{user}'")
+                    quotercompany = res[0]["company"]
+                    result = caesarcrud.update_data(fieldquotahash,quotahashvalue,"askcontribpermission",f"quoter = '{quotercompany}'")
 
 
                 if result:
@@ -339,9 +362,7 @@ def getquotasws(authinfo):
             print("DB reset.")
             caesarcrud.caesarsql.reset_connection()
         emit("getquotasws",{"error":f"{type(ex)} - {ex}"},broadcast=True)
-
-@app.route("/getquota/<path:subpath>",methods=["GET"])
-def getquota(subpath):
+def fetchquota(subpath):
     try:
         table = "quotas"
         url = subpath.split("/")
@@ -359,11 +380,16 @@ def getquota(subpath):
             return quota
         else:
             return {"quota doesn't exist."}
+    except Exception as ex:
+        return {"error":f"{type(ex)} -{ex}"}
+@app.route("/getquota/<path:subpath>",methods=["GET"])
+def getquota(subpath):
+    return fetchquota(subpath)
+
 
         
 
-    except Exception as ex:
-        return {"error":f"{type(ex)} -{ex}"}
+
 @app.route("/deletequota/<path:subpath>",methods=["DELETE"])
 @jwt_required()
 def deletequota(subpath):
@@ -378,6 +404,7 @@ def deletequota(subpath):
             quota_exists = caesarcrud.check_exists(("*"),table,condition)
             if quota_exists:
                 quota = caesarcrud.delete_data(table,condition)
+                quotaperm = caesarcrud.delete_data("askcontribpermission",f"quotahash = '{quotahash}' AND quoter = '{url[0]}'")
                 if quota:
                     return {"message":"quota was deleted."}
                 else:
@@ -416,10 +443,337 @@ def handle_message(data):
     print("data from the front end: ",str(data))
     emit("data",{'data':data,'id':request.sid},broadcast=True)
 
+@app.route("/contributeaskpermission/<path:subpath>",methods=["GET"])
+@jwt_required()
+def contributeaskpermision(subpath):
+    user =  get_jwt_identity()
+    if user:
+        #rint(user)
+    
+
+        url = subpath.split("/")
+        
+        quotaposter = url[0]
+        contributor = user
+        quotadata = {"quotatitle":url[1],"quotatype":url[2]}
+        quotahash = CaesarHash.hash_quota(quotadata)
+        data = (quotaposter,contributor,quotahash,"pending") # Pending,Denied, Accepted
+        quotatable = "quotas"
+        conditioncheck = f"quotahash = '{quotahash}' AND quoter = '{quotaposter}'"
+        quota_exists = caesarcrud.check_exists(("*"),quotatable,conditioncheck)
+        if quota_exists:
+            contributefields = caesarcreatetables.askcontribpermisionfield
+            table = "askcontribpermission"
+            condition = f"quoter = '{quotaposter}' AND contributor = '{contributor}' AND quotahash = '{quotahash}'"
+            ask_contrib_perm_exists = caesarcrud.check_exists(("*"),table,condition)
+            if ask_contrib_perm_exists:
+                return {"message":"Contribution permission already asked for."}
+            else:
+                result = caesarcrud.post_data(contributefields,data,table)
+                if result:
+                    return {"message":"Contributrion permission is now pending"}
+                else:
+                    return {"message":"database post error."}
 
 
+        else:
+            return {"message":"quota doesn't exist to contribute."}
 
 
+        
+        #condition = f"quotahash = '{quotahash}' AND visibility = 'public'"
+        
+        #quota_exists = caesarcrud.check_exists(("*"),table,condition)
+        #return {"done":"message done."}
+        #caesarai/ho/hem
+
+@app.route("/checkaskpermission/<path:subpath>",methods=["GET"])
+@jwt_required()
+def checkaskpermission(subpath):
+    user =  get_jwt_identity()
+    if user:
+
+        url = subpath.split("/")
+        
+        quotaposter = url[0]
+        contributor = user
+        quotadata = {"quotatitle":url[1],"quotatype":url[2]}
+        quotahash = CaesarHash.hash_quota(quotadata)
+        quotatable = "quotas"
+        conditioncheck = f"quotahash = '{quotahash}' AND quoter = '{quotaposter}'"
+        quota_exists = caesarcrud.check_exists(("*"),quotatable,conditioncheck)
+        if quota_exists:
+            contributefields = caesarcreatetables.askcontribpermisionfield
+            table = "askcontribpermission"
+            condition = f"quoter = '{quotaposter}' AND contributor = '{contributor}' AND quotahash = '{quotahash}'"
+            ask_contrib_perm_exists = caesarcrud.check_exists(("*"),table,condition)
+            if ask_contrib_perm_exists:
+                return {"message":"true"}
+            else:
+                return {"message":"false"}
+
+
+        else:
+            return {"message":"quota doesn't exist to contribute."}
+def fetchquotastatus(subpath,quotatable,conditioncheck,condition):
+    quota_exists = caesarcrud.check_exists(("*"),quotatable,conditioncheck)
+    if quota_exists:
+        contributefields = caesarcreatetables.askcontribpermisionfield
+        table = "askcontribpermission"
+        
+        ask_contrib_perm_exists = caesarcrud.check_exists(("*"),table,condition)
+        if ask_contrib_perm_exists:
+            result = caesarcrud.get_data(("contributor","permissionstatus"),table,condition)
+            
+            statuses = [contrib["permissionstatus"] for contrib in result]
+            contributorhashes = [contrib["contributor"] for contrib in result]
+            text = ""
+            for i in contributorhashes:
+                print(i)
+                text += f"contributorid = '{i}'"
+                text += " OR "
+            finaltext = text[:text.rfind("OR")].strip()
+            res = caesarcrud.get_data(("contributor",),"contributors",finaltext)
+            print(result)
+            if res:
+                final_result = []
+                for ind,contrib in enumerate(res):
+                    if statuses[ind] != "denied":
+                        contrib["permissionstatus"] = statuses[ind]
+                        final_result.append(contrib) 
+                #print(final_result)   
+                quotaresult = fetchquota(subpath) 
+                quotaresult["result"]  = final_result             
+                return quotaresult
+            else:
+                quotaresult = fetchquota(subpath) 
+                quotaresult["message"] = "get data failed."
+                return quotaresult
+
+        else:
+            quotaresult = fetchquota(subpath) 
+            quotaresult["message"] = "permission doesn't exist"
+            return quotaresult
+
+
+    else:
+        return {"message":"quota doesn't exist to contribute."}
+@app.route("/getquotastatusposter/<path:subpath>",methods=["GET"])
+@jwt_required()
+def getquotastatusposter(subpath):
+    user =  get_jwt_identity()
+    if user:
+        try:
+
+            url = subpath.split("/")
+            
+            quotaposter = url[0]
+            quotadata = {"quotatitle":url[1],"quotatype":url[2]}
+            quotahash = CaesarHash.hash_quota(quotadata)
+            quotatable = "quotas"
+            conditioncheck = f"quotahash = '{quotahash}' AND quoter = '{quotaposter}'"
+            condition = f"quoter = '{quotaposter}' AND quotahash = '{quotahash}'"
+            return fetchquotastatus(subpath,quotatable,conditioncheck,condition)
+
+        except Exception as ex:
+            return {"error":f"{type(ex)} - {ex}"}
+        
+@app.route("/getquotastatuscontrib/<path:subpath>",methods=["GET"])
+@jwt_required()
+def getquotastatuscontrib(subpath):
+    user =  get_jwt_identity()
+    if user:
+        try:
+
+            url = subpath.split("/")
+            
+            quotaposter = url[0]
+            quotadata = {"quotatitle":url[1],"quotatype":url[2]}
+            quotahash = CaesarHash.hash_quota(quotadata)
+            quotatable = "quotas"
+            conditioncheck = f"quotahash = '{quotahash}' AND quoter = '{quotaposter}'"
+            condition = f"quoter = '{quotaposter}' AND quotahash = '{quotahash}' AND contributor = '{user}'"
+            return fetchquotastatus(subpath,quotatable,conditioncheck,condition)
+
+        except Exception as ex:
+            return {"error":f"{type(ex)} - {ex}"}
+
+@app.route("/changepermissionstatus",methods=["PUT"])
+@jwt_required()
+def changepermissionstatus():
+    user =  get_jwt_identity()
+    if user:
+        data = request.get_json()
+        status = data["status"]
+        subpath = data["url"]
+        contributor = data["contributor"]
+        contributorhash = CaesarHash.hash_text(contributor)
+        url = subpath.split("/")
+        table= "askcontribpermission"
+        quotaposter = url[0]
+        quotadata = {"quotatitle":url[1],"quotatype":url[2]}
+        quotahash = CaesarHash.hash_quota(quotadata)
+        quotatable = "quotas"
+        conditioncheck = f"quotahash = '{quotahash}' AND quoter = '{quotaposter}'"
+        quota_exists = caesarcrud.check_exists(("*"),quotatable,conditioncheck)
+        if quota_exists:
+            table = "askcontribpermission"
+            condition = f"quoter = '{quotaposter}' AND quotahash = '{quotahash}' AND contributor = '{contributorhash}'"
+            ask_contrib_perm_exists = caesarcrud.check_exists(("*"),table,condition)
+            if ask_contrib_perm_exists:
+                res = caesarcrud.update_data(("permissionstatus",),(status,),table,condition)
+                if res:
+                    return {"message":f"contribution permission changed to {status}"}
+                else:
+                    return {"error":"error in update function. Didn't update correctly."}
+            else:
+                return {"error":"permission doesn't exist"}
+        else:
+            return {"error":"quota doesn't exist to contribute."}
+
+
+@socketio.on("getcontribquotasws")
+def getcontribquotasws(authinfo):
+    
+    try:
+        #print(type(authinfo),authinfo)
+        #authinfojson = json.loads(authinfo)
+        current_user = jwt_secure_decode(authinfo)
+        #print(current_user)
+        table = "askcontribpermission"
+        condition = f"contributor = '{current_user}'"
+        #print(condition)
+        contribution_exists = caesarcrud.check_exists(("*"),table,condition)
+        #print(quoter_exists,"ho")
+        if contribution_exists:
+            result = caesarcrud.get_data(("quotahash","permissionstatus"),table,condition)
+            if result:
+                quotahashes = [contrib["quotahash"] for contrib in result]
+                statuses = [contrib["permissionstatus"] for contrib in result]
+                text = ""
+                for i in quotahashes:
+                    text += f"quotahash = '{i}'"
+                    text += " OR "
+                finaltext = text[:text.rfind("OR")].strip()
+                quotafields = caesarcreatetables.quotasfields
+                resultone = caesarcrud.get_data(quotafields,"quotas",finaltext,getamount=1)
+                if resultone:
+                    results = caesarcrud.get_large_data(quotafields,"quotas",finaltext)
+                    for ind,result in enumerate(results):
+                        result = caesarcrud.tuple_to_json(quotafields,result)
+                        if quotahashes[ind] == result["quotahash"]:
+                            result["permissionstatus"] = statuses[ind]
+                        del result["quotahash"],result["quoterkey"]
+                        result["thumbnail"] = base64.b64encode(result["thumbnail"]).decode()
+                        #print(result,"hi")
+                        emit("getcontribquotasws",{'data':result,'id':request.sid},broadcast=True)
+                    emit("getcontribquotasws",{'data':{"message":"all data has been sent.","contributor":current_user},'id':request.sid},broadcast=True)
+                        
+                else:
+                    emit("getcontribquotasws",{'data':{"message":"quotas do not exist."},'id':request.sid},broadcast=True)
+            else:
+                emit("getcontribquotasws",{'data':{"message":"permitted contribution exists."},'id':request.sid},broadcast=True)
+        else:
+            emit("getcontribquotasws",{'data':{"message":"first contribution has not been permitted.","contributor":current_user},'id':request.sid},broadcast=True)
+
+
+    except Exception as ex:
+        if "(2013, 'Lost connection to MySQL server during query')" in str(ex):
+            print("DB reset.")
+            caesarcrud.caesarsql.reset_connection()
+        emit("getcontribquotasws",{"error":f"{type(ex)} - {ex}"},broadcast=True)
+
+@app.route("/storemagneturi",methods=["GET","POST"])
+@cross_origin()
+@jwt_required()
+def storemagneturi():
+    current_user = get_jwt_identity()
+    if current_user:
+        try:
+            torrentdetails = request.get_json()
+            # TODO create a block for the blockchain without long mining and just reward them with a larger cut of coin.
+            subpath = torrentdetails["quotaurl"]
+            magneturi = torrentdetails["quotamagneturi"]
+            torrentfilename = torrentdetails["torrentfilename"]
+            filesize = torrentdetails["filesize"]
+            url = subpath.split("/")
+            table = "quotamagneturis"
+            
+            quotaposter = url[0]
+            quotadata = {"quotatitle":url[1],"quotatype":url[2]}
+            quotahash = CaesarHash.hash_quota(quotadata)
+            condition = f"quotahash = '{quotahash}' AND contributor = '{current_user}' AND permissionstatus = 'accepted'"
+
+            quota_exists = caesarcrud.check_exists(("*"),"askcontribpermission",condition)
+            if quota_exists:
+                magneturi_exists = caesarcrud.check_exists(("*"),table,f"quotahash = '{quotahash}' AND contributor = '{current_user}' AND quotamagneturi = '{magneturi}' AND quoter = '{quotaposter}'")
+                if magneturi_exists:
+                    return {"message":"magneturi already exists"},200
+                else:
+                    result = caesarcrud.post_data(caesarcreatetables.quotamagneturifields,(magneturi,torrentfilename,quotahash,current_user,quotaposter,filesize),table)
+                    if result:
+                        return {"message":"magneturi stored."},200
+                    else:
+                        return {"error","error when posting"},200
+
+            else:
+                return {"error":f"company or contributor doesn't exist."},200
+            #quota_accepted_exists = importcsv.db.quotas_accepted.find_one({"companyid": companyid})
+        except Exception as ex:
+            return {"error":f"{type(ex)},{ex}"},400
+def fetchmagneturi(condition,conditioncheck,getall=0):
+    quota_exists = caesarcrud.check_exists(("*"),"quotas",conditioncheck)
+    if quota_exists:
+        table="quotamagneturis"
+        magneturi_exists = caesarcrud.check_exists(("*"),table,condition)
+        if magneturi_exists:
+            result = caesarcrud.get_data(("quotamagneturi","torrentfilename","filesize"),table,condition)
+            if result:
+                if getall == 0:
+                    return result[0]
+                elif getall == 1:
+                    return {"quotamagneturis":result}
+
+            else:
+                return {"message":" sql get request didn't work"},400
+        else:
+            return {"message":"magneturi does not exist."},200
+    else:
+        return {"error":"contributor is not authorized to fetch data to this quota."},200
+@app.route("/getmagneturi",methods=["POST"])
+@jwt_required()
+def getmagneturi():
+    current_user = get_jwt_identity()
+    if current_user:
+        data = request.get_json()
+        subpath = data["quotaurl"]
+        contributorid = CaesarHash.hash_text(data["contributor"]) 
+
+        torrentfilename = data["torrentfilename"]
+        url = subpath.split("/")
+        quotaposter = url[0]
+        data = {"quotatitle":url[1],"quotatype":url[2]}
+        quotahash = CaesarHash.hash_quota(data)
+        conditioncheck = f"quotahash = '{quotahash}' AND quoterkey = '{current_user}'"
+        condition = f"quotahash = '{quotahash}' AND contributor = '{contributorid}' AND torrentfilename = '{torrentfilename}' AND quoter = '{quotaposter}'"
+        return fetchmagneturi(condition,conditioncheck)
+
+@app.route("/getallmagneturi",methods=["POST"])
+@jwt_required()
+def getallmagneturi():
+    current_user = get_jwt_identity()
+    if current_user:
+        data = request.get_json()
+        subpath = data["quotaurl"]
+        contributorid = CaesarHash.hash_text(data["contributor"]) 
+
+        url = subpath.split("/")
+        quotaposter = url[0]
+        data = {"quotatitle":url[1],"quotatype":url[2]}
+        quotahash = CaesarHash.hash_quota(data)
+        conditioncheck = f"quotahash = '{quotahash}' AND quoterkey = '{current_user}'"
+        condition = f"quotahash = '{quotahash}' AND contributor = '{contributorid}' AND quoter = '{quotaposter}'"
+        return fetchmagneturi(condition,conditioncheck,getall=1)
 @app.route('/')
 def hello_geek():
     print("hi")
@@ -430,5 +784,6 @@ def hello_geek():
 # TODO Create quota poster CRUD API's
 
 if __name__ == "__main__":
-    socketio.run(app, debug=True,port=8080,host="0.0.0.0")#,port=5000)
+    #print(CaesarHash.hash_text("CaesarAI"))
+    socketio.run(app, debug=True,port=5000,host="0.0.0.0")#,port=5000)
     #app.run(host="0.0.0.0", port=5000,debug=True)
